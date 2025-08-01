@@ -1,0 +1,76 @@
+<body>
+<canvas id="html_canvas" width="1000" height="1000" style="border:1px solid #000000;" 
+        onmousemove="show_coords(event)" onclick="send_coords(event)"></canvas>
+<p id="display_coords"></p>
+</body>
+
+
+
+<script>
+// event.clientX and event.clientY is not on the pointer, need an offset to fix them
+const X_OFFSET = 10;
+const Y_OFFSET = 10;
+
+var cur_x = 19;
+var cur_y = 12;
+
+var canvas = document.getElementById("html_canvas");
+var ctx = canvas.getContext("2d");
+
+// adjusted clientX <--> cartesian
+function CLIENT_TO_CART(client_x,client_y) {
+        return {x: (client_x - canvas.width/2) / 10,
+                y: (canvas.height/2 - client_y) / 10}
+}
+function CART_TO_CLIENT(cart_x,cart_y) {
+    return {x: cart_x*10 + canvas.width/2,
+            y: -(cart_y*10 - canvas.height/2)}
+}
+
+const img = new Image();
+img.src = "static/range.png"
+img.onload = function() {
+    ctx.drawImage(img,0,0,canvas.width,canvas.height);
+    ctx.fillStyle = "red";
+    var {x,y} = CART_TO_CLIENT(cur_x,cur_y);
+    ctx.fillRect(x,y,5,5);
+}
+
+function show_coords(event){
+    // convert x,y to cartesian
+    var {x,y} = CLIENT_TO_CART(event.clientX - X_OFFSET, event.clientY - Y_OFFSET);
+    var coords_str = "x: " + x + "cm y: " + y + "cm";
+
+    document.getElementById("display_coords").innerHTML = coords_str;
+}
+
+async function send_coords(event){
+    // convert x,y to cartesian
+    var {x,y} = CLIENT_TO_CART(event.clientX - X_OFFSET, event.clientY - Y_OFFSET);
+
+    var resp = await fetch("http://127.0.0.1:5000/move", {
+        method: "POST",
+        body: JSON.stringify({x: x, y:y}),
+        headers: {"Content-type": "application/json; charset=UTF-8"}
+    });
+
+    var data = await resp.json();
+    if (data.success){
+        // color back the previous pos
+        var {x: prev_x, y: prev_y} = CART_TO_CLIENT(cur_x,cur_y);
+        ctx.fillStyle = "blue";
+        ctx.fillRect(prev_x,prev_y,5,5);
+
+        cur_x = x;
+        cur_y = y;
+        ctx.fillStyle = "red";
+        ctx.fillRect(event.clientX - X_OFFSET,event.clientY - Y_OFFSET,5,5);
+    }
+}
+
+// TODO 
+// - is there a better way to fix clientX
+// the drawing not that precise?
+
+</script>
+
