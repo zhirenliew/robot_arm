@@ -61,8 +61,11 @@
 
 #define UPDATE_RATE 5    // angles to add each time
 #define UPDATE_DELAY 50 // delay to wait each time
+#define GRIPPER_CLOSE_ANGLE 46
+#define GRIPPER_OPEN_ANGLE 10
 
 double cur_angles[] = {90,2.316760,3.797824,151.481064,90,0};
+double target_angles[6] = {};
 
 i2c_master_bus_handle_t bus_handle;
 i2c_master_dev_handle_t dev_handle;
@@ -99,22 +102,25 @@ void set_angle(uint8_t id, double angle){
     ESP_ERROR_CHECK(i2c_master_transmit(dev_handle,buf,5,-1));
 }
 
-void ik_solve(double target[3], double sol_1[3], double sol_2[3]){
-    // TODO check if formula is diff for -y values
+bool ik_solve(double target[3], double sol_1[3], double sol_2[3]){
     double x = target[0], y = target[1], psi = target[2];    
     double theta1,theta2;
 
     // use 2R equations
     double p2x = x - A3*cos(DEG_TO_RAD(psi));
     double p2y = y - A3*sin(DEG_TO_RAD(psi));
-    
+
     theta2 = acos((p2x*p2x + p2y*p2y - A1*A1 - A2*A2) / (2 * A1 * A2));
-    
+
+    //TODO figure out -x,-y
+    if ((p2x < 0 && p2y < 0) || isnan(theta2)){
+        return false;
+    }
+ 
     // find 1st solution
     if (p2x >= 0)
-        theta1 = atan(p2y/p2x) - atan( A2*sin(theta2) / (A1 + A2*cos(theta2)) ); 
+        theta1 = atan(p2y/p2x) - atan( A2*sin(theta2) / (A1 + A2*cos(theta2)) );  
     else
-        // theta1 calculation is different if p2x is negative
         theta1 = M_PI - atan(p2y/p2x) - atan( A2*sin(theta2) / (A1 + A2*cos(theta2)) );  
     sol_1[0] = RAD_TO_DEG(theta1);
     sol_1[1] = RAD_TO_DEG(theta2);
@@ -123,12 +129,14 @@ void ik_solve(double target[3], double sol_1[3], double sol_2[3]){
     // find 2nd solution
     theta2 = -theta2;
     if (p2x >= 0)
-        theta1 = atan(p2y/p2x) - atan( A2*sin(theta2) / (A1 + A2*cos(theta2)) ); 
+        theta1 = atan(p2y/p2x) - atan( A2*sin(theta2) / (A1 + A2*cos(theta2)) );  
     else
         theta1 = M_PI - atan(p2y/p2x) - atan( A2*sin(theta2) / (A1 + A2*cos(theta2)) );  
     sol_2[0] = RAD_TO_DEG(theta1);
     sol_2[1] = RAD_TO_DEG(theta2);
     sol_2[2] = psi - sol_2[0] - sol_2[1];  
+
+    return true;
 }
 
 void convert_angles(double sol[3]){
@@ -174,15 +182,22 @@ bool choose_sol(double final_sol[3], double sol_1[3], double sol_2[3]){
     return true;
 }
 
-void update_servos(double final_sol[3]){
-    // TODO currently only updates servo #1, #2, #3
-    
-    while (cur_angles[1] != final_sol[0] || cur_angles[2] != final_sol[1] || cur_angles[3] != final_sol[2]){
+void update_servos(double target[6]){
+    // TODO is there a better way to code this?
+    while (cur_angles[0] != target[0] || cur_angles[1] != target[1] || cur_angles[2] != target[2] ||
+           cur_angles[3] != target[3] || cur_angles[4] != target[4] || cur_angles[5] != target[5]) {
+
         // turn all servos slowly at the same pace so that it looks smoother
-        for (int i=0; i<3; i++){
-            double diff = final_sol[i] - cur_angles[i+1];
-            cur_angles[i+1] += (diff > UPDATE_RATE) ? UPDATE_RATE : diff;       
-            set_angle(i+1,cur_angles[i+1]);
+        for (int i=0; i<6; i++){
+            double diff = target[i] - cur_angles[i];
+            if (diff == 0)
+                continue;
+            else if (diff > 0)
+                cur_angles[i] += (diff > UPDATE_RATE) ? UPDATE_RATE : diff;       
+            else if (diff < 0)
+                cur_angles[i] += (diff < -UPDATE_RATE) ? -UPDATE_RATE : diff;       
+
+            set_angle(i,cur_angles[i]);
         }
 
         delay(UPDATE_DELAY);
@@ -236,58 +251,108 @@ void app_main(void){
         delay(100);
     }
      
-    // read x,y and do IK
+    // main loop
     while (true){
-        char buf[0x100+1];
-        printf("x,y: \n");
-        fgets(buf,0x100,stdin);
+        // 1: move 2: control gripper 3: rotate base
+        char choice_str[11] = "";
+        printf("choice:\n");
+        fgets(choice_str,10,stdin);
+        int choice = atoi(choice_str);
+        
+        memcpy(target_angles,cur_angles,sizeof(double)*6);
 
-        double coords[3] = {0,0,0}; // x,y,psi
-        char* s; int idx = 0;
-        for (s = strtok(buf,","); s; s = strtok(NULL,",")){
-            coords[idx] = atof(s);
-            idx++;
+        switch (choice) { 
+            case 0:
+                // move end effector
+                char buf[31];
+                printf("x,y: \n");
+                fgets(buf,30,stdin);
+
+                double coords[3] = {0,0,0}; // x,y,psi
+                char* s; int idx = 0;
+                for (s = strtok(buf,","); s; s = strtok(NULL,",")){
+                    coords[idx] = atof(s);
+                    idx++;
+                }
+
+                // keep trying different psi
+                // TODO is there a better way of dealing with this? 
+                bool is_succesful = false;
+                for (double psi=-180; psi <= 180; psi += 15) {
+                    coords[2] = psi;
+                    double sol_1[3] = {0,0,0};
+                    double sol_2[3] = {0,0,0};
+
+                    if (!ik_solve(coords,sol_1,sol_2)) {
+                        printf("no solutions for x: %f, y: %f, psi: %f\n",coords[0],coords[1], coords[2]);
+                        continue;
+                    }
+
+                    convert_angles(sol_1);
+                    convert_angles(sol_2);
+
+                    double final_sol[3] = {0,0,0};
+                    if (!choose_sol(final_sol,sol_1,sol_2)){
+                        printf("angles out of servo range\n");
+                        continue;
+                    } 
+
+                    memcpy(&target_angles[1],final_sol,sizeof(double)*3);
+                    printf("turning servos\n");
+                    update_servos(target_angles);
+                    is_succesful = true;
+
+                    // for debug
+                    printf("x: %f, y: %f, psi: %f\n",coords[0],coords[1], coords[2]);
+                    for (int i=0; i<3; i++){
+                        printf("servo%d: %f\n", i+1, final_sol[i]);
+                    }
+                    printf("theta1 = %f\n", -(final_sol[0] - 90 - EQB1));
+                    printf("theta2 = %f\n", final_sol[1] - 90 + EQB2);
+                    printf("theta3 = %f\n", -(final_sol[2] - 90 - EQB3));
+                    ///////////////////////////////
+
+                    break;
+                }
+                printf("success: %d\n",is_succesful);
+                break;
+
+            case 1:
+                // control gripper
+                char buf2[5];
+                printf("release/grip:\n");
+                fgets(buf2,3,stdin);
+                if (atoi(buf2) != 0)
+                    target_angles[5] = GRIPPER_CLOSE_ANGLE;    
+                else
+                    target_angles[5] = GRIPPER_OPEN_ANGLE;
+
+                update_servos(target_angles);
+                break;
+            
+            case 2:
+                // rotate base
+                char buf3[11];
+                printf("base angle:\n");
+                fgets(buf3,10,stdin);
+                double base_angle = atof(buf3);
+
+                if (0 <= base_angle && base_angle <= 178) {
+                    target_angles[0] = base_angle;
+                    update_servos(target_angles);
+                    printf("success: 1\n");
+                } else {
+                    printf("angle out of range\n");
+                    printf("success: 0\n");
+                }
+
+                break;
+
+            default:
+                printf("no such choice\n");
+                break;
+
         }
-
-        // keep trying different psi
-        // TODO is there a better way of dealing with this? 
-        bool is_succesful = false;
-        for (double psi=-180; psi <= 180; psi += 15) {
-            coords[2] = psi;
-            double sol_1[3] = {0,0,0};
-            double sol_2[3] = {0,0,0};
-            ik_solve(coords,sol_1,sol_2);
-
-            // if sol_1 NaN, sol_2 also NaN
-            if (isnan(sol_1[1])) {
-                printf("no solutions for x: %f, y: %f, psi: %f\n",coords[0],coords[1], coords[2]);
-                continue;
-            }
-
-            convert_angles(sol_1);
-            convert_angles(sol_2);
-
-            double final_sol[3] = {0,0,0};
-            if (!choose_sol(final_sol,sol_1,sol_2)){
-                printf("angles out of servo range\n");
-                continue;
-            } 
-
-            printf("turning servos\n");
-            update_servos(final_sol);
-            is_succesful = true;
-            // for debug
-            printf("x: %f, y: %f, psi: %f\n",coords[0],coords[1], coords[2]);
-            for (int i=0; i<3; i++){
-                printf("servo%d: %f\n", i+1, final_sol[i]);
-            }
-            printf("theta1 = %f\n", -(final_sol[0] - 90 - EQB1));
-            printf("theta2 = %f\n", final_sol[1] - 90 + EQB2);
-            printf("theta3 = %f\n", -(final_sol[2] - 90 - EQB3));
-            ///////////////////////////////
-            break;
-        }
-        printf("success: %d\n",is_succesful);
     }
 
 
@@ -301,9 +366,6 @@ void app_main(void){
 // current config: 45 0 0 
 // starting pos: 19, 12, -15
 
-// have to convert to servo angle for the score calculation to work
-// also makes life simpler
-
 // TODO:
-// - think of better ways to code it. use memcpy if can for better performance
-
+// make it so that after every update_servos, target_angles gets updated? prob. no need pass in vars also.
+// change start position so when fall, its smoother

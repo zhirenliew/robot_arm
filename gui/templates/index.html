@@ -1,18 +1,40 @@
 <body>
 <canvas id="html_canvas" width="1000" height="1000" style="border:1px solid #000000;" 
-        onmousemove="show_coords(event)" onclick="send_coords(event)"></canvas>
-<p id="display_coords"></p>
+        onmousemove="show_coords(event)" onclick="move(event)"></canvas>
+<p id="display_coords">x: y:</p>
+
+<div>
+<button type="button" class="button" onclick="grip(0)"> release </button>
+<button type="button" class="button" onclick="grip(1)"> grip </button>
+</div>
+
+<div>
+<button type="button" class="button" onclick="rotate(-5)"> rotate left </button>
+<button type="button" class="button" onclick="rotate(5)" > rotate right </button>
+</div>
 </body>
 
+<style>
+.button {
+    width: 400px;
+    height: 200px;
+    font-size: 50px;
+}
+
+
+</style>
 
 
 <script>
+var ip = "127.0.0.1"
+
 // event.clientX and event.clientY is not on the pointer, need an offset to fix them
 const X_OFFSET = 10;
 const Y_OFFSET = 10;
 
 var cur_x = 19;
 var cur_y = 12;
+var base_angle = 90;
 
 var canvas = document.getElementById("html_canvas");
 var ctx = canvas.getContext("2d");
@@ -44,13 +66,13 @@ function show_coords(event){
     document.getElementById("display_coords").innerHTML = coords_str;
 }
 
-async function send_coords(event){
+async function move(event){
     // convert x,y to cartesian
     var {x,y} = CLIENT_TO_CART(event.clientX - X_OFFSET, event.clientY - Y_OFFSET);
 
-    var resp = await fetch("http://127.0.0.1:5000/move", {
+    var resp = await fetch("http://" + ip + ":5000/move", {
         method: "POST",
-        body: JSON.stringify({x: x, y:y}),
+        body: JSON.stringify({x: x, y :y}),
         headers: {"Content-type": "application/json; charset=UTF-8"}
     });
 
@@ -68,9 +90,32 @@ async function send_coords(event){
     }
 }
 
+function grip(to_grip){
+    fetch("http://" + ip + ":5000/grip", {
+        method: "POST",
+        body: JSON.stringify({to_grip: to_grip}),
+        headers: {"Content-type": "application/json; charset=UTF-8"}
+    });
+}
+
+async function rotate(angle_chg){
+    var resp = await fetch("http://" + ip + ":5000/rotate", {
+        method: "POST",
+        body: JSON.stringify({angle: base_angle + angle_chg}),
+        headers: {"Content-type": "application/json; charset=UTF-8"}
+    });
+
+    var data = await resp.json();
+    if (data.success){
+        base_angle += angle_chg;
+    }
+    console.log(base_angle);    
+    return;
+}
+
 // TODO 
 // - is there a better way to fix clientX
-// the drawing not that precise?
-
+// - do more checks in the server? or esp? or both
+// - makes sense to do in the esp. better prevention
 </script>
 
