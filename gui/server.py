@@ -7,6 +7,9 @@ try:
 except:
     app.logger.warning("Can't connect to ESP")
 
+ser.write(b"5\n")
+ser.read_until(b"no such choice\n") # load b"choice:" in the RX pyserial buf
+
 
 @app.route("/")
 def index():
@@ -73,10 +76,6 @@ def rotate():
         app.logger.warning("ESP not connected")
         print(e)
         return {"success":False},200
-
-
-
-
 
 
 #app.run(host="0.0.0.0",port=5000)

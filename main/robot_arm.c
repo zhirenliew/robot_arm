@@ -6,7 +6,7 @@
  * https://github.com/espressif/esp-idf/blob/master/examples/peripherals/i2c/i2c_basic/main/i2c_basic_example_main.c
  * https://www.alldatasheet.com/datasheet-pdf/pdf/293576/NXP/PCA9685.html (See 7)
  * https://github.com/adafruit/Adafruit-PWM-Servo-Driver-Library/blob/master/Adafruit_PWMServoDriver.cpp
- * https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/peripherals/uart.html#install-drivers
+ * https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/peripherals/uart.html
  * https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/storage/vfs.html#_CPPv423uart_vfs_dev_use_driveri
  */
 
@@ -64,6 +64,9 @@
 #define GRIPPER_CLOSE_ANGLE 46
 #define GRIPPER_OPEN_ANGLE 10
 
+#define TX_PIN 26
+#define RX_PIN 27
+
 double cur_angles[] = {90,2.316760,3.797824,151.481064,90,0};
 double target_angles[6] = {};
 
@@ -86,6 +89,41 @@ void delay(int ms){
     // portTICK_PERIOD_MS: how many ms per tick
     vTaskDelay(ms / portTICK_PERIOD_MS);
 }
+
+void uart_print(char* str){
+    uart_write_bytes(UART_NUM_2,str,strlen(str));
+}
+
+char uart_getc(){
+    // block main thread until read a byte
+    size_t uart_buf_len = 0;
+    while (uart_buf_len == 0) 
+        ESP_ERROR_CHECK(uart_get_buffered_data_len(UART_NUM_2,&uart_buf_len));
+
+    // there is data to be read
+    char c;
+    uart_read_bytes(UART_NUM_2,&c,1,0);
+    return c;
+}
+
+void uart_fgets(char *buf, int len) {
+    // len includes the null byte
+    int i;
+
+    for (i = 0; i < (len-1); i++){
+        char c = uart_getc();
+        buf[i] = c;
+
+        if (c == '\n') {
+            i++;
+            break;
+        }
+    }
+
+    buf[i] = '\x00';
+    return;
+}
+
 
 void set_angle(uint8_t id, double angle){
     if (angle > 178 || angle < 0){
@@ -203,13 +241,25 @@ void update_servos(double target[6]){
         delay(UPDATE_DELAY);
     }
 }
- 
-void app_main(void){
-    // setup blocking for fgets over usb serial
-    ESP_ERROR_CHECK(uart_driver_install(0,1024,1024,10,0,0));
-    uart_vfs_dev_use_driver(0);
 
-    // initialise esp32 as master
+
+void init(){
+    // initialise uart with RP
+    ESP_ERROR_CHECK(uart_driver_install(UART_NUM_2,0x2000,0x2000,0,0,0));
+    uart_config_t uart_config = {
+        .baud_rate = 115200,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE, // only tx,rx, no cts,rts
+        .source_clk = UART_SCLK_DEFAULT,
+    };
+
+    ESP_ERROR_CHECK(uart_param_config(UART_NUM_2,&uart_config));
+    ESP_ERROR_CHECK(uart_set_pin(UART_NUM_2,TX_PIN,RX_PIN,UART_PIN_NO_CHANGE,UART_PIN_NO_CHANGE));
+
+
+    // initialise esp32 as i2c master
     i2c_master_bus_config_t i2c_mst_config = {
         .scl_io_num = I2C_MASTER_SCL_IO,
         .sda_io_num = I2C_MASTER_SDA_IO,
@@ -221,6 +271,7 @@ void app_main(void){
 
     ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_mst_config,&bus_handle));
 
+
     // initialise pca9685 device
     i2c_device_config_t dev_cfg = {
         .device_address = 0x40,
@@ -230,8 +281,8 @@ void app_main(void){
 
     ESP_ERROR_CHECK(i2c_master_bus_add_device(bus_handle,&dev_cfg,&dev_handle));
     ESP_LOGI(TAG,"I2C initialised succesfully");
+   
 
-    
     // write PRESCALE (can only be written in sleep mode)
     uint8_t init_mode1 = read_reg(REG_MODE1) & ~MODE1_SLEEP;
     write_reg(REG_MODE1,init_mode1 | MODE1_SLEEP);
@@ -243,30 +294,35 @@ void app_main(void){
     delay(1);
     write_reg(REG_MODE1,init_mode1 | MODE1_AI | MODE1_RESTART);
     ESP_LOGI(TAG,"PRESCALE and AUTO_INCREMENT initialised");  
-    printf("CURRENT MODE1: 0x%x\n", read_reg(REG_MODE1));
 
     // initiate servo positions
     for (int i=0; i<6; i++){
         set_angle(i,cur_angles[i]);
         delay(100);
     }
-     
+}
+ 
+
+void app_main(void){
+    init();
+
     // main loop
     while (true){
         // 1: move 2: control gripper 3: rotate base
-        char choice_str[11] = "";
-        printf("choice:\n");
-        fgets(choice_str,10,stdin);
+        char choice_str[10] = "";
+        uart_print("choice:\n");
+        uart_fgets(choice_str,10);
         int choice = atoi(choice_str);
+
         
         memcpy(target_angles,cur_angles,sizeof(double)*6);
 
         switch (choice) { 
             case 0:
                 // move end effector
-                char buf[31];
-                printf("x,y: \n");
-                fgets(buf,30,stdin);
+                char buf[30];
+                uart_print("x,y: \n");
+                uart_fgets(buf,30);
 
                 double coords[3] = {0,0,0}; // x,y,psi
                 char* s; int idx = 0;
@@ -277,51 +333,40 @@ void app_main(void){
 
                 // keep trying different psi
                 // TODO is there a better way of dealing with this? 
-                bool is_succesful = false;
+                bool is_successful = false;
                 for (double psi=-180; psi <= 180; psi += 15) {
                     coords[2] = psi;
                     double sol_1[3] = {0,0,0};
                     double sol_2[3] = {0,0,0};
 
-                    if (!ik_solve(coords,sol_1,sol_2)) {
-                        printf("no solutions for x: %f, y: %f, psi: %f\n",coords[0],coords[1], coords[2]);
+                    if (!ik_solve(coords,sol_1,sol_2))
                         continue;
-                    }
+                    
 
                     convert_angles(sol_1);
                     convert_angles(sol_2);
 
                     double final_sol[3] = {0,0,0};
-                    if (!choose_sol(final_sol,sol_1,sol_2)){
-                        printf("angles out of servo range\n");
+                    if (!choose_sol(final_sol,sol_1,sol_2))
                         continue;
-                    } 
-
+                    
                     memcpy(&target_angles[1],final_sol,sizeof(double)*3);
-                    printf("turning servos\n");
                     update_servos(target_angles);
-                    is_succesful = true;
-
-                    // for debug
-                    printf("x: %f, y: %f, psi: %f\n",coords[0],coords[1], coords[2]);
-                    for (int i=0; i<3; i++){
-                        printf("servo%d: %f\n", i+1, final_sol[i]);
-                    }
-                    printf("theta1 = %f\n", -(final_sol[0] - 90 - EQB1));
-                    printf("theta2 = %f\n", final_sol[1] - 90 + EQB2);
-                    printf("theta3 = %f\n", -(final_sol[2] - 90 - EQB3));
-                    ///////////////////////////////
-
+                    is_successful = true;
                     break;
                 }
-                printf("success: %d\n",is_succesful);
+
+                uart_print("success: ");
+                if (is_successful) uart_print("1\n");
+                else uart_print("0\n");
+
                 break;
 
             case 1:
                 // control gripper
                 char buf2[5];
-                printf("release/grip:\n");
-                fgets(buf2,3,stdin);
+                uart_print("release/grip:\n");
+                uart_fgets(buf2,5);
                 if (atoi(buf2) != 0)
                     target_angles[5] = GRIPPER_CLOSE_ANGLE;    
                 else
@@ -332,34 +377,27 @@ void app_main(void){
             
             case 2:
                 // rotate base
-                char buf3[11];
-                printf("base angle:\n");
-                fgets(buf3,10,stdin);
+                char buf3[10];
+                uart_print("base angle:\n");
+                uart_fgets(buf3,10);
                 double base_angle = atof(buf3);
 
                 if (0 <= base_angle && base_angle <= 178) {
                     target_angles[0] = base_angle;
                     update_servos(target_angles);
-                    printf("success: 1\n");
+                    uart_print("success: 1\n");
                 } else {
-                    printf("angle out of range\n");
-                    printf("success: 0\n");
+                    uart_print("success: 0\n");
                 }
 
                 break;
 
             default:
-                printf("no such choice\n");
+                uart_print("no such choice\n");
                 break;
 
         }
     }
-
-
-    // remove device and master bus
-    ESP_ERROR_CHECK(i2c_master_bus_rm_device(dev_handle));
-    ESP_ERROR_CHECK(i2c_del_master_bus(bus_handle));
-    ESP_LOGI(TAG, "I2C de-initialised successfully");
 }
 
 
@@ -369,3 +407,4 @@ void app_main(void){
 // TODO:
 // make it so that after every update_servos, target_angles gets updated? prob. no need pass in vars also.
 // change start position so when fall, its smoother
+// rewrite case 3 success string maybe
