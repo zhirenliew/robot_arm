@@ -3,7 +3,7 @@ import serial
 
 app = Flask(__name__)
 try:
-    ser = serial.Serial("/dev/cu.usbserial-0001",115200,timeout=1)
+    ser = serial.Serial("/dev/serial0",115200,timeout=1)
 except:
     app.logger.warning("Can't connect to ESP")
 
@@ -78,6 +78,5 @@ def rotate():
         return {"success":False},200
 
 
-#app.run(host="0.0.0.0",port=5000)
-app.run()
+app.run(host="0.0.0.0",port=5000)
 
