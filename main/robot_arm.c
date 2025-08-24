@@ -62,12 +62,12 @@
 #define UPDATE_RATE 5    // angles to add each time
 #define UPDATE_DELAY 50 // delay to wait each time
 #define GRIPPER_CLOSE_ANGLE 46
-#define GRIPPER_OPEN_ANGLE 10
+#define GRIPPER_OPEN_ANGLE 15 
 
 #define TX_PIN 26
 #define RX_PIN 27
 
-double cur_angles[] = {90,2.316760,3.797824,151.481064,90,0};
+double cur_angles[] = {90,2.316760,3.797824,151.481064,90,GRIPPER_OPEN_ANGLE};
 double target_angles[6] = {};
 
 i2c_master_bus_handle_t bus_handle;
