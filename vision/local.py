@@ -31,7 +31,8 @@ while True:
         c = max(contours,key=cv.contourArea)
         peri = cv.arcLength(c,True)
         approx = cv.approxPolyDP(c,0.015*peri,True)
-        cv.drawContours(frame,[approx],-1,(0,0,150),3) # frame still in bgr form
+        if len(approx) < 9:
+            cv.drawContours(frame,[approx],-1,(0,0,150),3) # frame still in bgr form
     
     # constantly show new frame
     cv.imshow("frame",frame)
